@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu May 17 21:01:53 2018
+Created on Sat Jun  9 12:53:14 2018
 
 @author: Winham
-
-===================基于1维CNN的ECG分类算法========================
+"""
+"""
+===================基于单向LSTM(ULSTM)的ECG分类算法========================
 
 *需要第三方工具包numpy,h5py,scikit-learn
 *基于深度学习框架TensorFlow
@@ -13,17 +14,13 @@ Created on Thu May 17 21:01:53 2018
 *开源github：https://github.com/Aiwiscal
 
 *本代码所需要的数据和标签文件来自matlab提取
-*详情：https://blog.csdn.net/qq_15746879/article/details/80340958
 ==================================================================
 """
 #载入所需工具包
 import time
 import numpy as np
 import h5py as hp
-# https://stackoverflow.com/questions/41333798/attributeerror-module-tensorflow-has-no-attribute-interactivesession
-# https://github.com/theislab/scgen/issues/14
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior() 
+import tensorflow as tf
 from sklearn.metrics import confusion_matrix
 
 sess=tf.InteractiveSession()
@@ -37,22 +34,34 @@ def load_mat(path_data,name_data,dtype='float32'):
     dataArr=np.array(arrays_d[name_data],dtype=dtype)
     return dataArr
 
-#使用TensorFlow组件完成CNN网络的搭建，与教程中参数略有不同
-def CNNnet(inputs,n_class):
-    conv1 = tf.layers.conv1d(inputs=inputs, filters=4, kernel_size=31, strides=1, \
-                             padding='same', activation = tf.nn.relu)
-    avg_pool_1 = tf.layers.average_pooling1d(inputs=conv1, pool_size=5, strides=5, \
-                                         padding='same')
-    conv2 = tf.layers.conv1d(inputs=avg_pool_1, filters=8, kernel_size=6, strides=1,\
-                             padding='same', activation = tf.nn.relu)
-    avg_pool_2 = tf.layers.average_pooling1d(inputs=conv2, pool_size=5, strides=5,\
-                                         padding='same')
+#使用TensorFlow组件完成ULSTM网络的搭建
+def ULSTM(x,n_input,n_hidden,n_steps,n_classes):
+   
+    x=tf.transpose(x,[1,0,2])    #整理数据，使之符合ULSTM接口要求
+    x=tf.reshape(x,[-1,n_input])
+    x=tf.split(x,n_steps)
     
-    flat = tf.reshape(avg_pool_2, (-1, int(250/5/5*8)))
+    #以下两句调用TF函数，生成一个单隐层的ULSTM
+    lstm_cell=tf.contrib.rnn.BasicLSTMCell(n_hidden,forget_bias=1.0)
+    outputs,_=tf.contrib.rnn.static_rnn(lstm_cell,x,dtype=tf.float32)
     
-    logits=tf.layers.dense(inputs=flat, units=n_class, activation=None)
-    logits=tf.nn.softmax(logits)
-    return logits
+    #以下部分将ULSTM每一步的输出拼接，形成特征向量
+    for i in range(n_steps):
+        if i==0:
+            fv=outputs[0]
+        else:
+            fv=tf.concat([fv,outputs[i]],1)
+    fvp=tf.reshape(fv,[-1,1,n_steps*n_hidden,1])
+    shp=fvp.get_shape()
+    flatten_shape=shp[1].value*shp[2].value*shp[3].value
+    
+    fvp2=tf.reshape(fvp,[-1,flatten_shape])
+    
+    #构建最后的全连接层
+    weights=tf.Variable(tf.random_normal([flatten_shape,n_classes]))
+    biases=tf.Variable(tf.random_normal([n_classes]))
+            
+    return tf.matmul(fvp2,weights)+biases
 
 #随机获取一个batch大小的数据，用于训练
 def get_batch(train_x,train_y,batch_size):
@@ -63,7 +72,7 @@ def get_batch(train_x,train_y,batch_size):
 
 #设定路径及文件名并载入，这里的心拍在Matlab下截取完成
 #详情：https://blog.csdn.net/qq_15746879/article/details/80340671
-Path='./' #自定义路径要正确
+Path='F:/Python files/ECGPrimer/' #自定义路径要正确
 DataFile='Data_CNN.mat'
 LabelFile='Label_OneHot.mat'
 
@@ -84,17 +93,22 @@ toc=time.time()
 print("Elapsed time is %f sec."%(toc-tic))
 print("======================================")
 
-print("1D-CNN setup and initialize...")
+print("ULSTM setup and initialize...")
+
+n_input=1
+n_hidden=1
+n_steps=250
+n_classes=4
 tic=time.time()
 x=tf.placeholder(tf.float32, [None, 250]) #定义placeholder数据入口
 x_=tf.reshape(x,[-1,250,1])
 y_=tf.placeholder(tf.float32,[None,4])
 
-logits=CNNnet(x_,4)
+logits=ULSTM(x_,n_input,n_hidden,n_steps,n_classes)
 
-learning_rate=0.01
+learning_rate=0.001
 batch_size=16
-maxiters=15000
+maxiters=10000
 
 cost=tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits,labels=y_))
 #这里使用了自适应学习率的Adam训练方法，可以认为是SGD的高级演化版本之一
@@ -104,7 +118,7 @@ toc=time.time()
 print("Elapsed time is %f sec."%(toc-tic))
 print("======================================")
 
-print("1D-CNN training and testing...")
+print("ULSTM training and testing...")
 tic=time.time()
 for i in range(maxiters):
     batch_x,batch_y=get_batch(train_x,train_y,batch_size)
